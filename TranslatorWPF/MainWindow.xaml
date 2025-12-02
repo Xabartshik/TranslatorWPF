@@ -80,20 +80,48 @@
                             FontWeight="Bold"/>
                 </Grid>
 
-                <TextBox x:Name="CppCodeTextBox"
-                         Grid.Row="1"
-                         AcceptsReturn="True"
-                         AcceptsTab="True"
-                         TextWrapping="NoWrap"
-                         VerticalScrollBarVisibility="Auto"
-                         HorizontalScrollBarVisibility="Auto"
-                         FontFamily="Consolas"
-                         FontSize="13"
-                         Padding="10"
-                         Margin="0"
-                         Background="#FAFAFA"
-                         Foreground="#222222"
-                         BorderThickness="0"/>
+                <!-- Редактор с номерами строк -->
+                <Grid Grid.Row="1" Background="#FAFAFA">
+                    <Grid.ColumnDefinitions>
+                        <!-- Колонка для номеров строк -->
+                        <ColumnDefinition Width="50"/>
+                        <!-- Колонка для самого редактора -->
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Номера строк -->
+                    <ScrollViewer x:Name="LineNumberScrollViewer"
+                                  Grid.Column="0"
+                                  VerticalScrollBarVisibility="Hidden"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Background="#F0F0F0">
+                        <TextBlock x:Name="LineNumbersTextBlock"
+                                   FontFamily="Consolas"
+                                   FontSize="13"
+                                   Foreground="#888888"
+                                   Margin="5,10,5,10"
+                                   TextAlignment="Right"
+                                   Text="1"/>
+                    </ScrollViewer>
+
+                    <!-- Поле ввода C++ кода -->
+                    <TextBox x:Name="CppCodeTextBox"
+                             Grid.Column="1"
+                             AcceptsReturn="True"
+                             AcceptsTab="True"
+                             TextWrapping="NoWrap"
+                             VerticalScrollBarVisibility="Auto"
+                             HorizontalScrollBarVisibility="Auto"
+                             FontFamily="Consolas"
+                             FontSize="13"
+                             Padding="10"
+                             Margin="0"
+                             Background="#FAFAFA"
+                             Foreground="#222222"
+                             BorderThickness="0"
+                             TextChanged="CppCodeTextBox_TextChanged"
+                             ScrollViewer.ScrollChanged="CppCodeTextBox_ScrollChanged"/>
+                </Grid>
             </Grid>
 
             <!-- Разделитель -->

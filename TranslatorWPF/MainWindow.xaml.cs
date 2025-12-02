@@ -2,11 +2,14 @@
 using Microsoft.Win32;
 using System;
 using System.Collections.ObjectModel;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Media;
 using Lexer;
 using Parser;
 using FlowchartGen;
@@ -17,13 +20,102 @@ namespace TranslatorWPF
     {
         public string Message { get; set; }
         public string Location { get; set; }
+
+        // Для подсветки в редакторе
+        public int Line { get; set; }
+        public int Column { get; set; }
+    }
+
+    /// <summary>
+    /// Адорнер, рисующий красную волнистую линию под ошибочными участками текста.
+    /// </summary>
+    public class ErrorUnderlineAdorner : Adorner
+    {
+        private readonly TextBox _textBox;
+        private readonly List<(int Line, int Column, int Length)> _errors;
+
+        public ErrorUnderlineAdorner(TextBox textBox, List<(int Line, int Column, int Length)> errors)
+            : base(textBox)
+        {
+            _textBox = textBox;
+            _errors = errors ?? new List<(int, int, int)>();
+            IsHitTestVisible = false;
+        }
+
+        protected override void OnRender(DrawingContext drawingContext)
+        {
+            base.OnRender(drawingContext);
+
+            if (_errors == null || _errors.Count == 0 || string.IsNullOrEmpty(_textBox.Text))
+                return;
+
+            var pen = new Pen(Brushes.Red, 1);
+            pen.Freeze();
+
+            foreach (var e in _errors)
+            {
+                if (e.Line <= 0 || e.Column <= 0)
+                    continue;
+
+                int charIndex = GetCharIndexFromLineColumn(e.Line, e.Column);
+                if (charIndex < 0 || charIndex >= _textBox.Text.Length)
+                    continue;
+
+                Rect startRect = _textBox.GetRectFromCharacterIndex(charIndex);
+                if (startRect.IsEmpty)
+                    continue;
+
+                int length = e.Length <= 0 ? 1 : e.Length;
+                int endIndex = Math.Min(charIndex + length, _textBox.Text.Length);
+                Rect endRect = _textBox.GetRectFromCharacterIndex(endIndex);
+
+                double y = startRect.Bottom + 1;
+                double x1 = startRect.Left;
+                double x2 = endRect.IsEmpty ? startRect.Right + 6 : endRect.Left;
+
+                DrawWavyLine(drawingContext, pen, x1, x2, y);
+            }
+        }
+
+        private int GetCharIndexFromLineColumn(int line, int column)
+        {
+            // line/column начинаются с 1
+            int lineIndex = line - 1;
+            if (lineIndex < 0 || lineIndex >= _textBox.LineCount)
+                return -1;
+
+            int lineStart = _textBox.GetCharacterIndexFromLineIndex(lineIndex);
+            return lineStart + (column - 1);
+        }
+
+        private static void DrawWavyLine(DrawingContext dc, Pen pen, double x1, double x2, double y)
+        {
+            double step = 4;
+            bool up = true;
+            Point prev = new Point(x1, y);
+
+            for (double x = x1; x < x2; x += step)
+            {
+                Point next = new Point(x + step, y + (up ? -2 : 2));
+                dc.DrawLine(pen, prev, next);
+                prev = next;
+                up = !up;
+            }
+        }
     }
 
     public partial class MainWindow : Window
     {
         private string _currentFilePath;
         private bool _isWebViewInitialized;
+
         private ObservableCollection<ErrorItem> _errors;
+
+        // Позиции ошибок для адорнера
+        private readonly List<(int Line, int Column, int Length)> _errorPositions = new();
+
+        private AdornerLayer _errorAdornerLayer;
+        private ErrorUnderlineAdorner _errorAdorner;
 
         public MainWindow()
         {
@@ -35,23 +127,27 @@ namespace TranslatorWPF
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            // Пример начального кода
+            // Инициализация начального кода
             CppCodeTextBox.Text = @"#include <iostream>
 using namespace std;
 
 int main() {
     int x = 0;
     int n = 10;
-    
     while (x < n) {
         if (x % 2 == 0) {
             cout << x << endl;
         }
         x++;
     }
-    
     return 0;
 }";
+
+            // Обновляем номера строк
+            UpdateLineNumbers();
+
+            // Адорнер для подчёркивания ошибок
+            _errorAdornerLayer = AdornerLayer.GetAdornerLayer(CppCodeTextBox);
 
             await InitializeWebViewAsync();
         }
@@ -90,10 +186,11 @@ int main() {
             ClearErrors();
 
             string cppCode = CppCodeTextBox.Text ?? string.Empty;
-
             if (string.IsNullOrWhiteSpace(cppCode))
             {
                 AddError("Ошибка", "Введите C++ код");
+                UpdateErrorAdorner();
+                UpdateErrorCount();
                 return;
             }
 
@@ -104,25 +201,27 @@ int main() {
                 var lexer = new LexAnalyzer(cppCode, grammar);
                 var tokens = lexer.Scan();
 
-                // Проверяем ошибки лексера
+                // Ошибки лексера
                 foreach (var error in lexer.Errors)
                 {
-                    AddError($"Лексер [{error.Line}:{error.Col}]", error.Message);
+                    AddError($"Лексер [{error.Line}:{error.Col}]", error.Message, error.Line, error.Col);
                 }
 
                 // 2. Синтаксический анализ
                 var parser = new SyntaxAnalyzer(tokens);
                 var ast = parser.ParseProgram();
 
-                // Проверяем ошибки парсера
+                // Ошибки парсера
                 foreach (var error in parser.Errors)
                 {
-                    AddError($"Парсер [{error.Line}:{error.Col}]", error.Message);
+                    AddError($"Парсер [{error.Line}:{error.Col}]", error.Message, error.Line, error.Col);
                 }
 
                 if (ast == null)
                 {
                     AddError("Критическая ошибка", "Не удалось разобрать программу");
+                    UpdateErrorAdorner();
+                    UpdateErrorCount();
                     return;
                 }
 
@@ -131,7 +230,7 @@ int main() {
                 string mermaidCode = flowchartGen.Generate(ast, "C++ Flowchart");
 
                 // 4. Отправляем Mermaid в WebView2
-                UpdateDiagramAsync(mermaidCode);
+                _ = UpdateDiagramAsync(mermaidCode);
 
                 if (_errors.Count == 0)
                 {
@@ -143,6 +242,7 @@ int main() {
                 AddError("Критическая ошибка", ex.Message);
             }
 
+            UpdateErrorAdorner();
             UpdateErrorCount();
         }
 
@@ -159,7 +259,6 @@ int main() {
                 .Replace("\n", "\\n");
 
             string script = $"window.updateMermaid && window.updateMermaid(\"{escaped}\");";
-
             try
             {
                 await DiagramView.CoreWebView2.ExecuteScriptAsync(script);
@@ -170,13 +269,24 @@ int main() {
             }
         }
 
-        private void AddError(string title, string message)
+        private void AddError(string title, string message, int line = 0, int column = 0, int length = 1)
         {
-            _errors.Add(new ErrorItem
+            var item = new ErrorItem
             {
                 Message = $"[{title}] {message}",
-                Location = DateTime.Now.ToString("HH:mm:ss")
-            });
+                Location = (line > 0 && column > 0)
+                    ? $"Line {line}, Col {column}"
+                    : DateTime.Now.ToString("HH:mm:ss"),
+                Line = line,
+                Column = column
+            };
+
+            _errors.Add(item);
+
+            if (line > 0 && column > 0)
+            {
+                _errorPositions.Add((line, column, length));
+            }
         }
 
         private void ClearErrors_Click(object sender, RoutedEventArgs e)
@@ -187,12 +297,75 @@ int main() {
         private void ClearErrors()
         {
             _errors.Clear();
+            _errorPositions.Clear();
+            UpdateErrorAdorner();
             UpdateErrorCount();
         }
 
         private void UpdateErrorCount()
         {
             ErrorCountTextBlock.Text = $"{_errors.Count} error(s)";
+        }
+
+        private void UpdateErrorAdorner()
+        {
+            if (_errorAdornerLayer == null)
+                return;
+
+            if (_errorAdorner != null)
+            {
+                _errorAdornerLayer.Remove(_errorAdorner);
+                _errorAdorner = null;
+            }
+
+            if (_errorPositions.Count == 0)
+                return;
+
+            _errorAdorner = new ErrorUnderlineAdorner(CppCodeTextBox, new List<(int, int, int)>(_errorPositions));
+            _errorAdornerLayer.Add(_errorAdorner);
+        }
+
+        // --- Работа с номерами строк ---
+
+        private void CppCodeTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            UpdateLineNumbers();
+            // При изменении текста логические позиции меняются, старые ошибки можно сбрасывать
+            // или оставить как есть. Здесь сбрасывать не будем, чтобы пользователь видел, где была ошибка.
+            if (_errorAdorner != null)
+            {
+                _errorAdorner.InvalidateVisual();
+            }
+        }
+
+        private void CppCodeTextBox_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            // Синхронизация вертикальной прокрутки номеров строк с текстом
+            if (LineNumberScrollViewer != null)
+            {
+                LineNumberScrollViewer.ScrollToVerticalOffset(e.VerticalOffset);
+            }
+        }
+
+        private void UpdateLineNumbers()
+        {
+            if (LineNumbersTextBlock == null || CppCodeTextBox == null)
+                return;
+
+            int lineCount = CppCodeTextBox.LineCount;
+            if (lineCount <= 0)
+            {
+                LineNumbersTextBlock.Text = "1";
+                return;
+            }
+
+            var sb = new StringBuilder();
+            for (int i = 1; i <= lineCount; i++)
+            {
+                sb.AppendLine(i.ToString());
+            }
+
+            LineNumbersTextBlock.Text = sb.ToString();
         }
 
         // --- Файловые операции ---
@@ -203,6 +376,7 @@ int main() {
             _currentFilePath = null;
             Title = "C++ to Flowchart - New";
             ClearErrors();
+            UpdateLineNumbers();
         }
 
         private void Open_Click(object sender, RoutedEventArgs e)
@@ -212,7 +386,6 @@ int main() {
                 Filter = "C++ files (*.cpp;*.cc;*.cxx;*.h)|*.cpp;*.cc;*.cxx;*.h|Text files (*.txt)|*.txt|All files (*.*)|*.*",
                 Title = "Открыть C++ файл"
             };
-
             if (dlg.ShowDialog() == true)
             {
                 try
@@ -221,6 +394,7 @@ int main() {
                     _currentFilePath = dlg.FileName;
                     Title = "C++ to Flowchart - " + Path.GetFileName(_currentFilePath);
                     ClearErrors();
+                    UpdateLineNumbers();
                 }
                 catch (Exception ex)
                 {
@@ -263,7 +437,6 @@ int main() {
                 Title = "Сохранить C++ файл",
                 FileName = _currentFilePath ?? "program.cpp"
             };
-
             if (dlg.ShowDialog() == true)
             {
                 try
