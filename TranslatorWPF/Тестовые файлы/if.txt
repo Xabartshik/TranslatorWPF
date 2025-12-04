@@ -1,0 +1,12 @@
+// Простой if без else
+#include <iostream>
+using namespace std;
+
+int main() {
+    int x;
+    cin >> x;
+    if (x > 0) {
+        cout << "positive" << endl;
+    }
+    return 0;
+}

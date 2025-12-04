@@ -25,6 +25,10 @@
                 <MenuItem Header="Translate" Click="Translate_Click" InputGestureText="Ctrl+T"/>
                 <MenuItem Header="Clear Errors" Click="ClearErrors_Click"/>
             </MenuItem>
+            <MenuItem Header="Export Diagram">
+                <MenuItem Header="Export as PNG" Click="ExportPNG_Click"/>
+                <MenuItem Header="Export as Mermaid Code" Click="ExportMermaid_Click"/>
+            </MenuItem>
             <MenuItem Header="Help">
                 <MenuItem Header="About" Click="About_Click"/>
             </MenuItem>

@@ -20,7 +20,6 @@ namespace TranslatorWPF
     {
         public string Message { get; set; }
         public string Location { get; set; }
-
         // Для подсветки в редакторе
         public int Line { get; set; }
         public int Column { get; set; }
@@ -45,7 +44,6 @@ namespace TranslatorWPF
         protected override void OnRender(DrawingContext drawingContext)
         {
             base.OnRender(drawingContext);
-
             if (_errors == null || _errors.Count == 0 || string.IsNullOrEmpty(_textBox.Text))
                 return;
 
@@ -108,12 +106,11 @@ namespace TranslatorWPF
     {
         private string _currentFilePath;
         private bool _isWebViewInitialized;
-
         private ObservableCollection<ErrorItem> _errors;
+        private string _currentMermaidCode; // Сохраняем текущий код диаграммы
 
         // Позиции ошибок для адорнера
         private readonly List<(int Line, int Column, int Length)> _errorPositions = new();
-
         private AdornerLayer _errorAdornerLayer;
         private ErrorUnderlineAdorner _errorAdorner;
 
@@ -148,7 +145,6 @@ int main() {
 
             // Адорнер для подчёркивания ошибок
             _errorAdornerLayer = AdornerLayer.GetAdornerLayer(CppCodeTextBox);
-
             await InitializeWebViewAsync();
         }
 
@@ -169,6 +165,13 @@ int main() {
 
                 DiagramView.Source = new Uri(indexPath, UriKind.Absolute);
                 await DiagramView.EnsureCoreWebView2Async(null);
+
+                // Включаем веб-сообщения
+                DiagramView.CoreWebView2.Settings.IsWebMessageEnabled = true;
+
+                // Подписываемся на получение сообщений из JavaScript
+                DiagramView.CoreWebView2.WebMessageReceived += CoreWebView2_WebMessageReceived;
+
                 _isWebViewInitialized = true;
             }
             catch (Exception ex)
@@ -181,11 +184,40 @@ int main() {
             }
         }
 
+        private void CoreWebView2_WebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            try
+            {
+                string message = e.WebMessageAsJson;
+
+                // Проверяем тип сообщения
+                if (message.Contains("\"type\":\"png\""))
+                {
+                    // Извлекаем PNG данные (base64)
+                    int dataStart = message.IndexOf("\"data\":\"") + 8;
+                    int dataEnd = message.LastIndexOf("\"");
+
+                    if (dataStart > 7 && dataEnd > dataStart)
+                    {
+                        string base64Data = message.Substring(dataStart, dataEnd - dataStart);
+                        // Вызываем сохранение в основном потоке
+                        Dispatcher.Invoke(() => SavePngToFile(base64Data));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.Invoke(() =>
+                    MessageBox.Show($"Ошибка обработки сообщения: {ex.Message}", "Ошибка",
+                        MessageBoxButton.OK, MessageBoxImage.Error));
+            }
+        }
+
         private void Translate_Click(object sender, RoutedEventArgs e)
         {
             ClearErrors();
-
             string cppCode = CppCodeTextBox.Text ?? string.Empty;
+
             if (string.IsNullOrWhiteSpace(cppCode))
             {
                 AddError("Ошибка", "Введите C++ код");
@@ -229,6 +261,9 @@ int main() {
                 var flowchartGen = new ASTToMermaid();
                 string mermaidCode = flowchartGen.Generate(ast, "C++ Flowchart");
 
+                // Сохраняем текущий код для экспорта
+                _currentMermaidCode = mermaidCode;
+
                 // 4. Отправляем Mermaid в WebView2
                 _ = UpdateDiagramAsync(mermaidCode);
 
@@ -266,6 +301,97 @@ int main() {
             catch (Exception ex)
             {
                 AddError("WebView2 ошибка", $"Ошибка при отправке диаграммы: {ex.Message}");
+            }
+        }
+
+        // ===== ЭКСПОРТ ДИАГРАММ =====
+
+        private async void ExportPNG_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(_currentMermaidCode))
+            {
+                MessageBox.Show("Сначала создайте диаграмму нажав Translate", "Нет диаграммы", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (!_isWebViewInitialized || DiagramView.CoreWebView2 == null)
+            {
+                MessageBox.Show("WebView2 не инициализирован", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            try
+            {
+                // Вызываем JavaScript функцию экспорта PNG
+                string script = "window.exportToPNG && window.exportToPNG();";
+                await DiagramView.CoreWebView2.ExecuteScriptAsync(script);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ошибка экспорта PNG: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void SavePngToFile(string base64Data)
+        {
+            var dlg = new SaveFileDialog
+            {
+                Filter = "PNG files (*.png)|*.png|All files (*.*)|*.*",
+                Title = "Сохранить диаграмму как PNG",
+                FileName = "flowchart.png"
+            };
+
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    // Удаляем префикс data:image/png;base64, если он есть
+                    string cleanData = base64Data;
+                    if (cleanData.StartsWith("data:image/png;base64,"))
+                    {
+                        cleanData = cleanData.Substring("data:image/png;base64,".Length);
+                    }
+
+                    // Декодируем base64 в байты
+                    byte[] imageBytes = Convert.FromBase64String(cleanData);
+
+                    // Сохраняем файл
+                    File.WriteAllBytes(dlg.FileName, imageBytes);
+                    MessageBox.Show($"Диаграмма сохранена в {dlg.FileName}", "Успех", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Ошибка сохранения файла: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        private void ExportMermaid_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(_currentMermaidCode))
+            {
+                MessageBox.Show("Сначала создайте диаграмму нажав Translate", "Нет диаграммы", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var dlg = new SaveFileDialog
+            {
+                Filter = "Mermaid files (*.mmd)|*.mmd|Text files (*.txt)|*.txt|All files (*.*)|*.*",
+                Title = "Сохранить код Mermaid",
+                FileName = "flowchart.mmd"
+            };
+
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    File.WriteAllText(dlg.FileName, _currentMermaidCode, Encoding.UTF8);
+                    MessageBox.Show($"Код Mermaid сохранён в {dlg.FileName}", "Успех", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Ошибка сохранения файла: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         }
 
@@ -330,8 +456,7 @@ int main() {
         private void CppCodeTextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
             UpdateLineNumbers();
-            // При изменении текста логические позиции меняются, старые ошибки можно сбрасывать
-            // или оставить как есть. Здесь сбрасывать не будем, чтобы пользователь видел, где была ошибка.
+
             if (_errorAdorner != null)
             {
                 _errorAdorner.InvalidateVisual();
@@ -353,6 +478,7 @@ int main() {
                 return;
 
             int lineCount = CppCodeTextBox.LineCount;
+
             if (lineCount <= 0)
             {
                 LineNumbersTextBlock.Text = "1";
@@ -374,6 +500,7 @@ int main() {
         {
             CppCodeTextBox.Clear();
             _currentFilePath = null;
+            _currentMermaidCode = null;
             Title = "C++ to Flowchart - New";
             ClearErrors();
             UpdateLineNumbers();
@@ -386,6 +513,7 @@ int main() {
                 Filter = "C++ files (*.cpp;*.cc;*.cxx;*.h)|*.cpp;*.cc;*.cxx;*.h|Text files (*.txt)|*.txt|All files (*.*)|*.*",
                 Title = "Открыть C++ файл"
             };
+
             if (dlg.ShowDialog() == true)
             {
                 try
@@ -437,6 +565,7 @@ int main() {
                 Title = "Сохранить C++ файл",
                 FileName = _currentFilePath ?? "program.cpp"
             };
+
             if (dlg.ShowDialog() == true)
             {
                 try
@@ -468,7 +597,7 @@ int main() {
                 "Левая панель: ввод кода на C++\n" +
                 "Правая панель: предпросмотр блок-схемы (Mermaid)\n" +
                 "Нижняя панель: лог ошибок и предупреждений\n\n" +
-                "Pipeline: Лексер → Парсер → AST → Mermaid\n" +
+                "Принцип работы: C++ → Лексер → Парсер → AST → Mermaid\n" +
                 "Стандарт ГОСТ 19.701-90 (ЕСПД)",
                 "About",
                 MessageBoxButton.OK,

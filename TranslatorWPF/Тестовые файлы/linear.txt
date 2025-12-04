@@ -1,0 +1,14 @@
+// Простая линейная программа: последовательные операции
+#include <iostream>
+using namespace std;
+
+int main() {
+    int a;
+    a = 5;
+    int b;
+    b = 3;
+    int c;
+    c = a + b;
+    cout << c << endl;
+    return 0;
+}
