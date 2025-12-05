@@ -115,7 +115,6 @@ namespace TranslatorWPF
         private string _currentMermaidCode;
         private AstNode _currentAst;
         private ScopeManager _currentScopes;
-
         private readonly List<(int Line, int Column, int Length)> _errorPositions = new();
         private AdornerLayer _errorAdornerLayer;
         private ErrorUnderlineAdorner _errorAdorner;
@@ -124,7 +123,6 @@ namespace TranslatorWPF
         {
             InitializeComponent();
             Loaded += MainWindow_Loaded;
-
             _errors = new ObservableCollection<ErrorItem>();
             ErrorsListBox.ItemsSource = _errors;
         }
@@ -132,22 +130,24 @@ namespace TranslatorWPF
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             CppCodeTextBox.Text = @"#include <iostream>
-
 using namespace std;
 
 int main() {
     int x = 0;
     int n = 10;
+
     while (x < n) {
         if (x % 2 == 0) {
             cout << x << endl;
         }
+
         x++;
     }
+
     return 0;
 }";
-
             UpdateLineNumbers();
+
             _errorAdornerLayer = AdornerLayer.GetAdornerLayer(CppCodeTextBox);
             await InitializeWebViewAsync();
         }
@@ -172,6 +172,7 @@ int main() {
 
                 DiagramView.CoreWebView2.Settings.IsWebMessageEnabled = true;
                 DiagramView.CoreWebView2.WebMessageReceived += CoreWebView2_WebMessageReceived;
+
                 _isWebViewInitialized = true;
             }
             catch (Exception ex)
@@ -235,7 +236,7 @@ int main() {
                 var lexer = new LexAnalyzer(cppCode, grammar);
                 var tokens = lexer.Scan();
 
-                // вывод списка лексем в таб "Tokens"
+                // вывод списка лексем в таб "Токены"
                 UpdateTokensView(tokens);
 
                 foreach (var error in lexer.Errors)
@@ -251,6 +252,7 @@ int main() {
                 var parser = new SyntaxAnalyzer(tokens);
                 _currentScopes = parser._scopes;
                 var ast = parser.ParseProgram();
+
                 var optimizer = new AstOptimizer();
                 ast = (ProgramNode?)optimizer.Optimize(ast!);
                 _currentAst = ast;
@@ -287,7 +289,6 @@ int main() {
                 }
 
                 bool hasErrors = _errors.Any(ei => ei.Severity == DiagnosticSeverity.Error);
-
                 if (hasErrors)
                 {
                     ClearDiagramView();
@@ -297,7 +298,6 @@ int main() {
                     var flowchartGen = new ASTToMermaid();
                     string mermaidCode = flowchartGen.Generate(ast, "C++ Flowchart");
                     _currentMermaidCode = mermaidCode;
-
                     ShowDiagramView();
                     _ = UpdateDiagramAsync(mermaidCode);
 
@@ -329,6 +329,7 @@ int main() {
                 .Replace("\n", "\\n");
 
             string script = $"window.updateMermaid && window.updateMermaid(\"{escaped}\");";
+
             try
             {
                 await DiagramView.CoreWebView2.ExecuteScriptAsync(script);
@@ -349,11 +350,12 @@ int main() {
             if (DiagramView != null)
             {
                 DiagramView.Visibility = Visibility.Collapsed;
-                if (_isWebViewInitialized && DiagramView.CoreWebView2 != null)
-                {
-                    _ = DiagramView.CoreWebView2.ExecuteScriptAsync(
-                        "window.updateMermaid && window.updateMermaid('graph TD;');");
-                }
+            }
+
+            if (_isWebViewInitialized && DiagramView.CoreWebView2 != null)
+            {
+                _ = DiagramView.CoreWebView2.ExecuteScriptAsync(
+                    "window.updateMermaid && window.updateMermaid('graph TD;');");
             }
         }
 
@@ -370,7 +372,7 @@ int main() {
             if (string.IsNullOrEmpty(_currentMermaidCode))
             {
                 MessageBox.Show(
-                    "Сначала создайте диаграмму нажав Translate",
+                    "Сначала создайте диаграмму, нажав «Перевести»",
                     "Нет диаграммы",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -406,7 +408,7 @@ int main() {
         {
             var dlg = new SaveFileDialog
             {
-                Filter = "PNG files (*.png)|*.png|All files (*.*)|*.*",
+                Filter = "Файлы PNG (*.png)|*.png|Все файлы (*.*)|*.*",
                 Title = "Сохранить диаграмму как PNG",
                 FileName = "flowchart.png"
             };
@@ -446,7 +448,7 @@ int main() {
             if (string.IsNullOrEmpty(_currentMermaidCode))
             {
                 MessageBox.Show(
-                    "Сначала создайте диаграмму нажав Translate",
+                    "Сначала создайте диаграмму, нажав «Перевести»",
                     "Нет диаграммы",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -455,7 +457,7 @@ int main() {
 
             var dlg = new SaveFileDialog
             {
-                Filter = "Mermaid files (*.mmd)|*.mmd|Text files (*.txt)|*.txt|All files (*.*)|*.*",
+                Filter = "Файлы Mermaid (*.mmd)|*.mmd|Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*",
                 Title = "Сохранить код Mermaid",
                 FileName = "flowchart.mmd"
             };
@@ -494,7 +496,7 @@ int main() {
             {
                 Message = $"[{title}] {message}",
                 Location = (line > 0 && column > 0)
-                    ? $"Line {line}, Col {column}"
+                    ? $"Строка {line}, столбец {column}"
                     : DateTime.Now.ToString("HH:mm:ss"),
                 Line = line,
                 Column = column,
@@ -526,7 +528,7 @@ int main() {
         {
             int errorCount = _errors.Count(e => e.Severity == DiagnosticSeverity.Error);
             int warningCount = _errors.Count(e => e.Severity == DiagnosticSeverity.Warning);
-            ErrorCountTextBlock.Text = $"{errorCount} error(s), {warningCount} warning(s)";
+            ErrorCountTextBlock.Text = $"{errorCount} ошибок, {warningCount} предупреждений";
         }
 
         private void UpdateErrorAdorner()
@@ -546,6 +548,7 @@ int main() {
             _errorAdorner = new ErrorUnderlineAdorner(
                 CppCodeTextBox,
                 new List<(int, int, int)>(_errorPositions));
+
             _errorAdornerLayer.Add(_errorAdorner);
         }
 
@@ -573,6 +576,7 @@ int main() {
                 return;
 
             int lineCount = CppCodeTextBox.LineCount;
+
             if (lineCount <= 0)
             {
                 LineNumbersTextBlock.Text = "1";
@@ -595,9 +599,7 @@ int main() {
             _currentMermaidCode = null;
             _currentAst = null;
             _currentScopes = null;
-
-            Title = "C++ to Flowchart - New";
-
+            Title = "C++ в блок-схему — новый файл";
             ClearDiagramView();
             ClearErrors();
             UpdateAstView(null);
@@ -610,8 +612,8 @@ int main() {
         {
             var dlg = new OpenFileDialog
             {
-                Filter = "C++ files (*.cpp;*.cc;*.cxx;*.h)|*.cpp;*.cc;*.cxx;*.h|Text files (*.txt)|*.txt|All files (*.*)|*.*",
-                Title = "Открыть C++ файл"
+                Filter = "Файлы C++ (*.cpp;*.cc;*.cxx;*.h)|*.cpp;*.cc;*.cxx;*.h|Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*",
+                Title = "Открыть файл C++"
             };
 
             if (dlg.ShowDialog() == true)
@@ -623,9 +625,7 @@ int main() {
                     _currentMermaidCode = null;
                     _currentAst = null;
                     _currentScopes = null;
-
-                    Title = "C++ to Flowchart - " + Path.GetFileName(_currentFilePath);
-
+                    Title = "C++ в блок-схему — " + Path.GetFileName(_currentFilePath);
                     ClearDiagramView();
                     ClearErrors();
                     UpdateAstView(null);
@@ -670,8 +670,8 @@ int main() {
         {
             var dlg = new SaveFileDialog
             {
-                Filter = "C++ files (*.cpp)|*.cpp|Text files (*.txt)|*.txt|All files (*.*)|*.*",
-                Title = "Сохранить C++ файл",
+                Filter = "Файлы C++ (*.cpp)|*.cpp|Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*",
+                Title = "Сохранить файл C++",
                 FileName = _currentFilePath ?? "program.cpp"
             };
 
@@ -681,7 +681,7 @@ int main() {
                 {
                     File.WriteAllText(dlg.FileName, CppCodeTextBox.Text, Encoding.UTF8);
                     _currentFilePath = dlg.FileName;
-                    Title = "C++ to Flowchart - " + Path.GetFileName(_currentFilePath);
+                    Title = "C++ в блок-схему — " + Path.GetFileName(_currentFilePath);
                 }
                 catch (Exception ex)
                 {
@@ -702,12 +702,12 @@ int main() {
         private void About_Click(object sender, RoutedEventArgs e)
         {
             MessageBox.Show(
-                "C++ to Flowchart Translator\n\n" +
+                "Переводчик C++ в блок-схему\n\n" +
                 "Левая панель: ввод кода на C++\n" +
                 "Правая панель: блок-схема, AST, таблица идентификаторов, список лексем\n" +
                 "Нижняя панель: лог ошибок и предупреждений\n\n" +
                 "Принцип работы: C++ → Лексер → Парсер → Оптимизация → Mermaid\n",
-                "About",
+                "О программе",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
@@ -746,16 +746,20 @@ int main() {
             }
 
             var sb = new StringBuilder();
-            sb.AppendLine("Index  Type          Line  Col   Lexeme");
-            sb.AppendLine("-----  ------------  ----  ----  ----------------");
+            sb.AppendLine("№    Тип          Стр  Столб Лексема");
+            sb.AppendLine("----- ------------ ---- ----- ----------------");
 
             for (int i = 0; i < tokens.Count; i++)
             {
                 var t = tokens[i];
                 string type = t.Type.ToString();
-                string lexeme = t.Lexeme.Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
+                string lexeme = t.Lexeme
+                    .Replace("\r", "\\r")
+                    .Replace("\n", "\\n")
+                    .Replace("\t", "\\t");
+
                 sb.AppendLine(
-                    $"{i,5}  {type,-12}  {t.Line,4}  {t.Column,4}  {lexeme}");
+                    $"{i,5} {type,-12} {t.Line,4} {t.Column,5} {lexeme}");
             }
 
             TokensTextBox.Text = sb.ToString();
