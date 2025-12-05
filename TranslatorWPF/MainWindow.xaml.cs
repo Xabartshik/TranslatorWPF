@@ -251,6 +251,8 @@ int main() {
                 var parser = new SyntaxAnalyzer(tokens);
                 _currentScopes = parser._scopes;
                 var ast = parser.ParseProgram();
+                var optimizer = new AstOptimizer();
+                ast = (ProgramNode?)optimizer.Optimize(ast!);
                 _currentAst = ast;
 
                 UpdateAstView(ast);
@@ -704,8 +706,7 @@ int main() {
                 "Левая панель: ввод кода на C++\n" +
                 "Правая панель: блок-схема, AST, таблица идентификаторов, список лексем\n" +
                 "Нижняя панель: лог ошибок и предупреждений\n\n" +
-                "Принцип работы: C++ → Лексер → Парсер → AST → Mermaid\n" +
-                "Стандарт ГОСТ 19.701-90 (ЕСПД)",
+                "Принцип работы: C++ → Лексер → Парсер → Оптимизация → Mermaid\n",
                 "About",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
