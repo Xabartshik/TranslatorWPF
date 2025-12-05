@@ -4,6 +4,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
@@ -16,18 +17,22 @@ using FlowchartGen;
 
 namespace TranslatorWPF
 {
+    public enum DiagnosticSeverity
+    {
+        Info,
+        Warning,
+        Error
+    }
+
     public class ErrorItem
     {
         public string Message { get; set; }
         public string Location { get; set; }
-        // Для подсветки в редакторе
         public int Line { get; set; }
         public int Column { get; set; }
+        public DiagnosticSeverity Severity { get; set; } = DiagnosticSeverity.Error;
     }
 
-    /// <summary>
-    /// Адорнер, рисующий красную волнистую линию под ошибочными участками текста.
-    /// </summary>
     public class ErrorUnderlineAdorner : Adorner
     {
         private readonly TextBox _textBox;
@@ -44,6 +49,7 @@ namespace TranslatorWPF
         protected override void OnRender(DrawingContext drawingContext)
         {
             base.OnRender(drawingContext);
+
             if (_errors == null || _errors.Count == 0 || string.IsNullOrEmpty(_textBox.Text))
                 return;
 
@@ -77,7 +83,6 @@ namespace TranslatorWPF
 
         private int GetCharIndexFromLineColumn(int line, int column)
         {
-            // line/column начинаются с 1
             int lineIndex = line - 1;
             if (lineIndex < 0 || lineIndex >= _textBox.LineCount)
                 return -1;
@@ -107,9 +112,10 @@ namespace TranslatorWPF
         private string _currentFilePath;
         private bool _isWebViewInitialized;
         private ObservableCollection<ErrorItem> _errors;
-        private string _currentMermaidCode; // Сохраняем текущий код диаграммы
+        private string _currentMermaidCode;
+        private AstNode _currentAst;
+        private ScopeManager _currentScopes;
 
-        // Позиции ошибок для адорнера
         private readonly List<(int Line, int Column, int Length)> _errorPositions = new();
         private AdornerLayer _errorAdornerLayer;
         private ErrorUnderlineAdorner _errorAdorner;
@@ -118,14 +124,15 @@ namespace TranslatorWPF
         {
             InitializeComponent();
             Loaded += MainWindow_Loaded;
+
             _errors = new ObservableCollection<ErrorItem>();
             ErrorsListBox.ItemsSource = _errors;
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            // Инициализация начального кода
             CppCodeTextBox.Text = @"#include <iostream>
+
 using namespace std;
 
 int main() {
@@ -140,10 +147,7 @@ int main() {
     return 0;
 }";
 
-            // Обновляем номера строк
             UpdateLineNumbers();
-
-            // Адорнер для подчёркивания ошибок
             _errorAdornerLayer = AdornerLayer.GetAdornerLayer(CppCodeTextBox);
             await InitializeWebViewAsync();
         }
@@ -166,12 +170,8 @@ int main() {
                 DiagramView.Source = new Uri(indexPath, UriKind.Absolute);
                 await DiagramView.EnsureCoreWebView2Async(null);
 
-                // Включаем веб-сообщения
                 DiagramView.CoreWebView2.Settings.IsWebMessageEnabled = true;
-
-                // Подписываемся на получение сообщений из JavaScript
                 DiagramView.CoreWebView2.WebMessageReceived += CoreWebView2_WebMessageReceived;
-
                 _isWebViewInitialized = true;
             }
             catch (Exception ex)
@@ -190,17 +190,13 @@ int main() {
             {
                 string message = e.WebMessageAsJson;
 
-                // Проверяем тип сообщения
                 if (message.Contains("\"type\":\"png\""))
                 {
-                    // Извлекаем PNG данные (base64)
                     int dataStart = message.IndexOf("\"data\":\"") + 8;
                     int dataEnd = message.LastIndexOf("\"");
-
                     if (dataStart > 7 && dataEnd > dataStart)
                     {
                         string base64Data = message.Substring(dataStart, dataEnd - dataStart);
-                        // Вызываем сохранение в основном потоке
                         Dispatcher.Invoke(() => SavePngToFile(base64Data));
                     }
                 }
@@ -208,19 +204,26 @@ int main() {
             catch (Exception ex)
             {
                 Dispatcher.Invoke(() =>
-                    MessageBox.Show($"Ошибка обработки сообщения: {ex.Message}", "Ошибка",
-                        MessageBoxButton.OK, MessageBoxImage.Error));
+                    MessageBox.Show(
+                        $"Ошибка обработки сообщения: {ex.Message}",
+                        "Ошибка",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error));
             }
         }
 
         private void Translate_Click(object sender, RoutedEventArgs e)
         {
             ClearErrors();
-            string cppCode = CppCodeTextBox.Text ?? string.Empty;
 
+            string cppCode = CppCodeTextBox.Text ?? string.Empty;
             if (string.IsNullOrWhiteSpace(cppCode))
             {
-                AddError("Ошибка", "Введите C++ код");
+                AddError("Ошибка", "Введите C++ код", severity: DiagnosticSeverity.Error);
+                ClearDiagramView();
+                UpdateAstView(null);
+                UpdateScopeView(null);
+                UpdateTokensView(null);
                 UpdateErrorAdorner();
                 UpdateErrorCount();
                 return;
@@ -228,53 +231,84 @@ int main() {
 
             try
             {
-                // 1. Лексический анализ
                 var grammar = LanguageGrammarFactory.CreateCppGrammar();
                 var lexer = new LexAnalyzer(cppCode, grammar);
                 var tokens = lexer.Scan();
 
-                // Ошибки лексера
+                // вывод списка лексем в таб "Tokens"
+                UpdateTokensView(tokens);
+
                 foreach (var error in lexer.Errors)
                 {
-                    AddError($"Лексер [{error.Line}:{error.Col}]", error.Message, error.Line, error.Col);
+                    AddError(
+                        $"Лексер [{error.Line}:{error.Col}]",
+                        error.Message,
+                        error.Line,
+                        error.Col,
+                        severity: DiagnosticSeverity.Error);
                 }
 
-                // 2. Синтаксический анализ
                 var parser = new SyntaxAnalyzer(tokens);
+                _currentScopes = parser._scopes;
                 var ast = parser.ParseProgram();
+                _currentAst = ast;
 
-                // Ошибки парсера
+                UpdateAstView(ast);
+                UpdateScopeView(_currentScopes);
+
                 foreach (var error in parser.Errors)
                 {
-                    AddError($"Парсер [{error.Line}:{error.Col}]", error.Message, error.Line, error.Col);
+                    var msg = error.Message ?? string.Empty;
+                    var severity =
+                        msg.Contains("неинициализированной переменной", StringComparison.OrdinalIgnoreCase) ||
+                        msg.Contains("неинициализированной", StringComparison.OrdinalIgnoreCase)
+                            ? DiagnosticSeverity.Warning
+                            : DiagnosticSeverity.Error;
+
+                    AddError(
+                        $"Парсер [{error.Line}:{error.Col}]",
+                        msg,
+                        error.Line,
+                        error.Col,
+                        severity: severity);
                 }
 
                 if (ast == null)
                 {
-                    AddError("Критическая ошибка", "Не удалось разобрать программу");
+                    AddError("Критическая ошибка", "Не удалось разобрать программу", severity: DiagnosticSeverity.Error);
+                    ClearDiagramView();
+                    UpdateAstView(null);
+                    UpdateScopeView(null);
                     UpdateErrorAdorner();
                     UpdateErrorCount();
                     return;
                 }
 
-                // 3. Генерация Mermaid-диаграммы
-                var flowchartGen = new ASTToMermaid();
-                string mermaidCode = flowchartGen.Generate(ast, "C++ Flowchart");
+                bool hasErrors = _errors.Any(ei => ei.Severity == DiagnosticSeverity.Error);
 
-                // Сохраняем текущий код для экспорта
-                _currentMermaidCode = mermaidCode;
-
-                // 4. Отправляем Mermaid в WebView2
-                _ = UpdateDiagramAsync(mermaidCode);
-
-                if (_errors.Count == 0)
+                if (hasErrors)
                 {
-                    AddError("Успех", "Программа успешно переведена в блок-схему");
+                    ClearDiagramView();
+                }
+                else
+                {
+                    var flowchartGen = new ASTToMermaid();
+                    string mermaidCode = flowchartGen.Generate(ast, "C++ Flowchart");
+                    _currentMermaidCode = mermaidCode;
+
+                    ShowDiagramView();
+                    _ = UpdateDiagramAsync(mermaidCode);
+
+                    AddError("Успех", "Программа успешно переведена в блок-схему", severity: DiagnosticSeverity.Info);
                 }
             }
             catch (Exception ex)
             {
-                AddError("Критическая ошибка", ex.Message);
+                AddError("Критическая ошибка", ex.Message, severity: DiagnosticSeverity.Error);
+                ClearDiagramView();
+                UpdateAstView(null);
+                UpdateScopeView(null);
+                UpdateTokensView(null);
             }
 
             UpdateErrorAdorner();
@@ -286,7 +320,6 @@ int main() {
             if (!_isWebViewInitialized || DiagramView.CoreWebView2 == null)
                 return;
 
-            // Экранируем для JS-строки
             string escaped = mermaidCode
                 .Replace("\\", "\\\\")
                 .Replace("\"", "\\\"")
@@ -300,35 +333,70 @@ int main() {
             }
             catch (Exception ex)
             {
-                AddError("WebView2 ошибка", $"Ошибка при отправке диаграммы: {ex.Message}");
+                AddError(
+                    "WebView2 ошибка",
+                    $"Ошибка при отправке диаграммы: {ex.Message}",
+                    severity: DiagnosticSeverity.Error);
             }
         }
 
-        // ===== ЭКСПОРТ ДИАГРАММ =====
+        private void ClearDiagramView()
+        {
+            _currentMermaidCode = null;
+
+            if (DiagramView != null)
+            {
+                DiagramView.Visibility = Visibility.Collapsed;
+                if (_isWebViewInitialized && DiagramView.CoreWebView2 != null)
+                {
+                    _ = DiagramView.CoreWebView2.ExecuteScriptAsync(
+                        "window.updateMermaid && window.updateMermaid('graph TD;');");
+                }
+            }
+        }
+
+        private void ShowDiagramView()
+        {
+            if (DiagramView != null)
+            {
+                DiagramView.Visibility = Visibility.Visible;
+            }
+        }
 
         private async void ExportPNG_Click(object sender, RoutedEventArgs e)
         {
             if (string.IsNullOrEmpty(_currentMermaidCode))
             {
-                MessageBox.Show("Сначала создайте диаграмму нажав Translate", "Нет диаграммы", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(
+                    "Сначала создайте диаграмму нажав Translate",
+                    "Нет диаграммы",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
                 return;
             }
 
             if (!_isWebViewInitialized || DiagramView.CoreWebView2 == null)
             {
-                MessageBox.Show("WebView2 не инициализирован", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(
+                    "WebView2 не инициализирован",
+                    "Ошибка",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
                 return;
             }
 
             try
             {
-                // Вызываем JavaScript функцию экспорта PNG
                 string script = "window.exportToPNG && window.exportToPNG();";
                 await DiagramView.CoreWebView2.ExecuteScriptAsync(script);
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Ошибка экспорта PNG: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(
+                    $"Ошибка экспорта PNG: {ex.Message}",
+                    "Ошибка",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
             }
         }
 
@@ -345,23 +413,28 @@ int main() {
             {
                 try
                 {
-                    // Удаляем префикс data:image/png;base64, если он есть
                     string cleanData = base64Data;
-                    if (cleanData.StartsWith("data:image/png;base64,"))
+                    if (cleanData.StartsWith("data:image/png;base64,", StringComparison.OrdinalIgnoreCase))
                     {
                         cleanData = cleanData.Substring("data:image/png;base64,".Length);
                     }
 
-                    // Декодируем base64 в байты
                     byte[] imageBytes = Convert.FromBase64String(cleanData);
-
-                    // Сохраняем файл
                     File.WriteAllBytes(dlg.FileName, imageBytes);
-                    MessageBox.Show($"Диаграмма сохранена в {dlg.FileName}", "Успех", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                    MessageBox.Show(
+                        $"Диаграмма сохранена в {dlg.FileName}",
+                        "Успех",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Ошибка сохранения файла: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show(
+                        $"Ошибка сохранения файла: {ex.Message}",
+                        "Ошибка",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
                 }
             }
         }
@@ -370,7 +443,11 @@ int main() {
         {
             if (string.IsNullOrEmpty(_currentMermaidCode))
             {
-                MessageBox.Show("Сначала создайте диаграмму нажав Translate", "Нет диаграммы", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(
+                    "Сначала создайте диаграмму нажав Translate",
+                    "Нет диаграммы",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
                 return;
             }
 
@@ -386,16 +463,30 @@ int main() {
                 try
                 {
                     File.WriteAllText(dlg.FileName, _currentMermaidCode, Encoding.UTF8);
-                    MessageBox.Show($"Код Mermaid сохранён в {dlg.FileName}", "Успех", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show(
+                        $"Код Mermaid сохранён в {dlg.FileName}",
+                        "Успех",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Ошибка сохранения файла: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show(
+                        $"Ошибка сохранения файла: {ex.Message}",
+                        "Ошибка",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
                 }
             }
         }
 
-        private void AddError(string title, string message, int line = 0, int column = 0, int length = 1)
+        private void AddError(
+            string title,
+            string message,
+            int line = 0,
+            int column = 0,
+            int length = 1,
+            DiagnosticSeverity severity = DiagnosticSeverity.Error)
         {
             var item = new ErrorItem
             {
@@ -404,14 +495,15 @@ int main() {
                     ? $"Line {line}, Col {column}"
                     : DateTime.Now.ToString("HH:mm:ss"),
                 Line = line,
-                Column = column
+                Column = column,
+                Severity = severity
             };
 
             _errors.Add(item);
 
-            if (line > 0 && column > 0)
+            if (severity == DiagnosticSeverity.Error && line > 0 && column > 0)
             {
-                _errorPositions.Add((line, column, length));
+                _errorPositions.Add((line, column, length <= 0 ? 1 : length));
             }
         }
 
@@ -430,7 +522,9 @@ int main() {
 
         private void UpdateErrorCount()
         {
-            ErrorCountTextBlock.Text = $"{_errors.Count} error(s)";
+            int errorCount = _errors.Count(e => e.Severity == DiagnosticSeverity.Error);
+            int warningCount = _errors.Count(e => e.Severity == DiagnosticSeverity.Warning);
+            ErrorCountTextBlock.Text = $"{errorCount} error(s), {warningCount} warning(s)";
         }
 
         private void UpdateErrorAdorner()
@@ -447,11 +541,11 @@ int main() {
             if (_errorPositions.Count == 0)
                 return;
 
-            _errorAdorner = new ErrorUnderlineAdorner(CppCodeTextBox, new List<(int, int, int)>(_errorPositions));
+            _errorAdorner = new ErrorUnderlineAdorner(
+                CppCodeTextBox,
+                new List<(int, int, int)>(_errorPositions));
             _errorAdornerLayer.Add(_errorAdorner);
         }
-
-        // --- Работа с номерами строк ---
 
         private void CppCodeTextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
@@ -465,7 +559,6 @@ int main() {
 
         private void CppCodeTextBox_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
-            // Синхронизация вертикальной прокрутки номеров строк с текстом
             if (LineNumberScrollViewer != null)
             {
                 LineNumberScrollViewer.ScrollToVerticalOffset(e.VerticalOffset);
@@ -478,7 +571,6 @@ int main() {
                 return;
 
             int lineCount = CppCodeTextBox.LineCount;
-
             if (lineCount <= 0)
             {
                 LineNumbersTextBlock.Text = "1";
@@ -494,15 +586,21 @@ int main() {
             LineNumbersTextBlock.Text = sb.ToString();
         }
 
-        // --- Файловые операции ---
-
         private void New_Click(object sender, RoutedEventArgs e)
         {
             CppCodeTextBox.Clear();
             _currentFilePath = null;
             _currentMermaidCode = null;
+            _currentAst = null;
+            _currentScopes = null;
+
             Title = "C++ to Flowchart - New";
+
+            ClearDiagramView();
             ClearErrors();
+            UpdateAstView(null);
+            UpdateScopeView(null);
+            UpdateTokensView(null);
             UpdateLineNumbers();
         }
 
@@ -520,8 +618,17 @@ int main() {
                 {
                     CppCodeTextBox.Text = File.ReadAllText(dlg.FileName, Encoding.UTF8);
                     _currentFilePath = dlg.FileName;
+                    _currentMermaidCode = null;
+                    _currentAst = null;
+                    _currentScopes = null;
+
                     Title = "C++ to Flowchart - " + Path.GetFileName(_currentFilePath);
+
+                    ClearDiagramView();
                     ClearErrors();
+                    UpdateAstView(null);
+                    UpdateScopeView(null);
+                    UpdateTokensView(null);
                     UpdateLineNumbers();
                 }
                 catch (Exception ex)
@@ -595,13 +702,62 @@ int main() {
             MessageBox.Show(
                 "C++ to Flowchart Translator\n\n" +
                 "Левая панель: ввод кода на C++\n" +
-                "Правая панель: предпросмотр блок-схемы (Mermaid)\n" +
+                "Правая панель: блок-схема, AST, таблица идентификаторов, список лексем\n" +
                 "Нижняя панель: лог ошибок и предупреждений\n\n" +
                 "Принцип работы: C++ → Лексер → Парсер → AST → Mermaid\n" +
                 "Стандарт ГОСТ 19.701-90 (ЕСПД)",
                 "About",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
+        }
+
+        private void UpdateAstView(AstNode? root)
+        {
+            if (AstTextBox == null)
+                return;
+
+            AstTextBox.Text = AstPrinter.PrintDeepTreeToString(root);
+        }
+
+        private void UpdateScopeView(ScopeManager? scopes)
+        {
+            if (ScopeTextBox == null)
+                return;
+
+            if (scopes == null)
+            {
+                ScopeTextBox.Text = string.Empty;
+                return;
+            }
+
+            ScopeTextBox.Text = scopes.GetScopeTreeAsString();
+        }
+
+        private void UpdateTokensView(IReadOnlyList<Token>? tokens)
+        {
+            if (TokensTextBox == null)
+                return;
+
+            if (tokens == null || tokens.Count == 0)
+            {
+                TokensTextBox.Text = string.Empty;
+                return;
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("Index  Type          Line  Col   Lexeme");
+            sb.AppendLine("-----  ------------  ----  ----  ----------------");
+
+            for (int i = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                string type = t.Type.ToString();
+                string lexeme = t.Lexeme.Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
+                sb.AppendLine(
+                    $"{i,5}  {type,-12}  {t.Line,4}  {t.Column,4}  {lexeme}");
+            }
+
+            TokensTextBox.Text = sb.ToString();
         }
     }
 }

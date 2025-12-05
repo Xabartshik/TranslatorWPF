@@ -46,6 +46,20 @@ public static class AstPrinter
         PrintNode(root, prefix: string.Empty, isLast: true, depth: 1, maxDepth, Console.Out);
     }
 
+    public static string PrintDeepTreeToString(AstNode? root)
+    {
+        if (root == null)
+            return string.Empty;
+
+        using var writer = new StringWriter();
+        int maxDepth = GetDepth(root);
+
+        writer.WriteLine("Дерево разбора:");
+        PrintNode(root, prefix: string.Empty, isLast: true, depth: 1, maxDepth, writer);
+
+        return writer.ToString();
+    }
+
     public static void PrintDeepTreeToFile(AstNode root, string? filePath = null)
     {
         filePath = string.IsNullOrWhiteSpace(filePath) ? DefaultTreeFileName : filePath;
