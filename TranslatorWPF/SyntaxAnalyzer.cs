@@ -89,7 +89,8 @@ public sealed class SyntaxAnalyzer
         while (_lookahead.Type != target1 &&
                _lookahead.Type != target2 &&
                _lookahead.Type != TokenType.LBrace &&
-               _lookahead.Type != TokenType.RBrace)
+               _lookahead.Type != TokenType.RBrace &&
+               _lookahead.Type != TokenType.EndOfFile)
         {
             MoveNext();
         }
@@ -141,11 +142,45 @@ public sealed class SyntaxAnalyzer
         }
     }
 
+    /// <summary>
+    /// Проверка, что в текущей позиции начинается определение int main(...).
+    /// Используется только как lookahead, состояние парсера не изменяет.
+    /// </summary>
+    private bool LooksLikeMainDefinition()
+    {
+        int idx = _pos;
+        if (idx >= _tokenList.Count) return false;
+        if (_tokenList[idx].Type != TokenType.TypeInt) return false;
+
+        idx++; // после int
+
+        // Указатели к main (int* main) допускаем синтаксически, но дальше можно ужесточить при желании.
+        while (idx < _tokenList.Count && _tokenList[idx].Type == TokenType.OpMultiply)
+            idx++;
+
+        if (idx >= _tokenList.Count) return false;
+        var nameTok = _tokenList[idx];
+        if (nameTok.Type != TokenType.Identifier ||
+            !string.Equals(nameTok.Lexeme, "main", StringComparison.Ordinal))
+            return false;
+
+        idx++;
+        if (idx >= _tokenList.Count) return false;
+
+        return _tokenList[idx].Type == TokenType.LParen;
+    }
+
+    /// <summary>
+    /// Жёсткое требование: возможны только препроцессоры/using/пустые строки до int main(),
+    /// затем одна функция int main(...), и никакого кода после неё.
+    /// При нарушении добавляется ошибка и парсер останавливается.
+    /// </summary>
     private ProgramNode ParseCppProgram()
     {
         var stmts = new List<AstNode>();
 
-        while (_lookahead.Type != TokenType.EndOfFile)
+        // 1. Пропускаем разрешённые конструкции до возможного main.
+        while (!IsAtEnd())
         {
             // Препроцессор
             if (_lookahead.Type == TokenType.Preprocessor)
@@ -156,38 +191,67 @@ public sealed class SyntaxAnalyzer
                 continue;
             }
 
-            // Пустые/лишние ;
-            if (Is(TokenType.Semicolon))
+            // Пустые/лишние ; и } (на всякий случай)
+            if (Is(TokenType.Semicolon) || Is(TokenType.RBrace))
             {
                 Consume();
                 continue;
             }
 
-            // Лишние } (на случай несбалансированных скобок)
-            if (Is(TokenType.RBrace))
-            {
-                Consume();
-                continue;
-            }
-
-            // using namespace ...
+            // using ...
             if (Is(TokenType.KeywordUsing))
             {
                 ParseUsingNamespace();
                 continue;
             }
 
-            var stmt = ParseCppStatementOrDeclaration();
-            if (stmt != null)
-            {
-                stmts.Add(stmt);
-                _inErrorRecovery = false;
-            }
-            else if (_lookahead.Type != TokenType.EndOfFile)
-            {
-                SkipToSemicolon();
-                _inErrorRecovery = false;
-            }
+            // Всё остальное — потенциальный код верхнего уровня
+            break;
+        }
+
+        // Если файл закончился, а main так и не встретился
+        if (IsAtEnd())
+        {
+            Errors.Add((-1, -1, "Ожидалась функция 'int main()' как точка входа программы."));
+            return new ProgramNode(stmts);
+        }
+
+        // 2. В этой точке обязано начинаться int main(...), всё остальное — код вне main
+        if (!LooksLikeMainDefinition())
+        {
+            Errors.Add((_lookahead.Line, _lookahead.Column,
+                "Код вне функции 'int main()' не допускается. Переместите весь код внутрь 'main'."));
+
+            // Останавливаем парсер: аккуратно доедаем все токены
+            while (!IsAtEnd())
+                MoveNext();
+
+            return new ProgramNode(stmts);
+        }
+
+        // 3. Разбираем определение main существующей логикой
+        var typeTok = Consume(); // int
+        SkipCppTemplateArguments();
+
+        string pointerPrefix = "";
+        while (Is(TokenType.OpMultiply))
+        {
+            pointerPrefix += "*";
+            Consume();
+        }
+
+        var nameTok = Consume(); // main
+        var mainFunc = ParseCppFunctionDeclaration(typeTok, nameTok, pointerPrefix);
+        stmts.Add(mainFunc);
+
+        // 4. Любые токены после main считаются кодом вне main
+        if (!IsAtEnd())
+        {
+            Errors.Add((_lookahead.Line, _lookahead.Column,
+                "Код вне функции 'int main()' не допускается. Переместите весь код внутрь 'main'."));
+
+            while (!IsAtEnd())
+                MoveNext();
         }
 
         return new ProgramNode(stmts);
@@ -203,7 +267,8 @@ public sealed class SyntaxAnalyzer
 
             if (_lookahead.Type == TokenType.Identifier || _lookahead.Type == TokenType.StdNamespace)
             {
-                var ns = Consume().Lexeme;
+                var nsTok = Consume();
+                var ns = nsTok.Lexeme;
                 _ = ns;
             }
             else
@@ -222,6 +287,7 @@ public sealed class SyntaxAnalyzer
             // using std::cout;
             while (!Is(TokenType.Semicolon) && _lookahead.Type != TokenType.EndOfFile)
                 Consume();
+
             if (Is(TokenType.Semicolon))
                 Consume();
         }
@@ -348,7 +414,6 @@ public sealed class SyntaxAnalyzer
         var typeNode = new IdentifierNode(typeTok.Lexeme + pointerPrefix, typeTok.Line, typeTok.Column);
 
         AstNode? init = null;
-
         if (Is(TokenType.OpAssign))
         {
             Consume(); // =
@@ -375,13 +440,13 @@ public sealed class SyntaxAnalyzer
         var assign = new AssignNode(
             idNode,
             "=",
-            init ?? new LiteralNode("void", "", nameTok.Line, nameTok.Column));
+            init ?? new LiteralNode("void", string.Empty, nameTok.Line, nameTok.Column));
 
         return new BinaryNode("decl", typeNode, assign);
     }
 
     /// <summary>
-    /// int a, b, c = 10;  — список объявлений в операторе (с точкой с запятой).
+    /// int a, b, c = 10; — список объявлений в операторе (с точкой с запятой).
     /// Возвращает либо один BinaryNode("decl", ...), либо ProgramNode из нескольких.
     /// </summary>
     private AstNode ParseCppVarDeclList(
@@ -400,7 +465,6 @@ public sealed class SyntaxAnalyzer
         while (Is(TokenType.Comma))
         {
             Consume(); // ,
-
             if (_lookahead.Type != TokenType.Identifier)
             {
                 Errors.Add((_lookahead.Line, _lookahead.Column,
@@ -497,12 +561,14 @@ public sealed class SyntaxAnalyzer
         {
             if (_lookahead.Type == TokenType.LParen) depth++;
             else if (_lookahead.Type == TokenType.RParen) depth--;
-            if (depth > 0) Consume();
+
+            if (depth > 0)
+                Consume();
         }
+
         Expect(TokenType.RParen, "Ожидалась ')' в объявлении функции.");
 
         AstNode body;
-
         if (Is(TokenType.LBrace))
         {
             _scopes.EnterScope("func-body " + nameToken.Lexeme);
@@ -513,6 +579,7 @@ public sealed class SyntaxAnalyzer
         {
             Errors.Add((nameToken.Line, nameToken.Column,
                 "Предупреждение: отсутствует '{' после объявления функции — предполагается тело."));
+
             _scopes.EnterScope("func-body " + nameToken.Lexeme);
 
             var implicitStmts = new List<AstNode>();
@@ -527,7 +594,7 @@ public sealed class SyntaxAnalyzer
             }
 
             if (Is(TokenType.KeywordReturn))
-                implicitStmts.Add(ParseCppStatement() ?? new LiteralNode("void", "", -1, -1));
+                implicitStmts.Add(ParseCppStatement() ?? new LiteralNode("void", string.Empty, -1, -1));
 
             body = new ProgramNode(implicitStmts);
             _scopes.ExitScope();
@@ -564,6 +631,7 @@ public sealed class SyntaxAnalyzer
             {
                 Consume();
             }
+
             return new LiteralNode("keyword", "break", tok.Line, tok.Column);
         }
 
@@ -581,6 +649,7 @@ public sealed class SyntaxAnalyzer
             {
                 Consume();
             }
+
             return new LiteralNode("keyword", "continue", tok.Line, tok.Column);
         }
 
@@ -637,7 +706,6 @@ public sealed class SyntaxAnalyzer
 
         // Обычное выражение
         var e = ParseCppExpr();
-
         if (!Is(TokenType.Semicolon))
         {
             Errors.Add((_lookahead.Line, _lookahead.Column,
@@ -657,8 +725,8 @@ public sealed class SyntaxAnalyzer
     private AstNode ParseCppIfStatement()
     {
         Consume(); // if
-        AstNode condition;
 
+        AstNode condition;
         if (Is(TokenType.LParen))
         {
             Consume();
@@ -704,8 +772,8 @@ public sealed class SyntaxAnalyzer
     private AstNode ParseCppWhileStatement()
     {
         Consume(); // while
-        AstNode condition;
 
+        AstNode condition;
         if (Is(TokenType.LParen))
         {
             Consume();
@@ -740,9 +808,13 @@ public sealed class SyntaxAnalyzer
         var body = ParseCppStatementOrBlock();
 
         if (!Is(TokenType.KeywordWhile))
+        {
             Errors.Add((_lookahead.Line, _lookahead.Column, "Ожидалась 'while' в конце do-while."));
+        }
         else
+        {
             Consume();
+        }
 
         Expect(TokenType.LParen, "Ожидалась '(' после while.");
         var condition = ParseCppExpr();
@@ -764,12 +836,10 @@ public sealed class SyntaxAnalyzer
         }
 
         Consume(); // (
-
         _scopes.EnterScope("for-init");
 
         // init
         AstNode init;
-
         if (Is(TokenType.Semicolon))
         {
             init = new LiteralNode("void", string.Empty, -1, -1);
@@ -889,10 +959,9 @@ public sealed class SyntaxAnalyzer
             return new LiteralNode("error", string.Empty, _lookahead.Line, _lookahead.Column);
 
         Consume(); // {
-
         _scopes.EnterScope("block");
-        var stmts = new List<AstNode>();
 
+        var stmts = new List<AstNode>();
         while (_lookahead.Type != TokenType.RBrace &&
                _lookahead.Type != TokenType.EndOfFile)
         {
@@ -1094,7 +1163,7 @@ public sealed class SyntaxAnalyzer
             }
 
             expr = new BinaryNode(op.Lexeme + "-post", expr,
-                new LiteralNode("void", "", op.Line, op.Column));
+                new LiteralNode("void", string.Empty, op.Line, op.Column));
         }
 
         // Индексация: []
@@ -1140,7 +1209,6 @@ public sealed class SyntaxAnalyzer
         if (Is(TokenType.KeywordNew))
         {
             var newTok = Consume();
-
             if (!IsCppType(_lookahead.Type))
             {
                 Errors.Add((newTok.Line, newTok.Column, "Ожидался тип после 'new'."));
@@ -1317,6 +1385,7 @@ public sealed class SyntaxAnalyzer
     {
         if (un.Op == "return")
             return GetExpressionType(un.Operand);
+
         if (un.Op == "!")
             return "bool";
 
