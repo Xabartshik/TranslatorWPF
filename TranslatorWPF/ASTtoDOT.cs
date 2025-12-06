@@ -16,6 +16,7 @@ public sealed class ASTToMermaid
     private readonly StringBuilder _mermaid = new();
     private readonly List<string> _pendingNodes = new(); // хвосты веток, которые нужно слить
     private readonly Dictionary<string, int> _decisionEdgeCount = new(); // сколько рёбер уже вышло из ромба
+    private string _endNodeId = string.Empty;
 
     /// <summary>
     /// Контекст цикла: условие и хвосты выхода (для break и ветки "Нет").
@@ -38,6 +39,7 @@ public sealed class ASTToMermaid
         _pendingNodes.Clear();
         _decisionEdgeCount.Clear();
         _loopStack.Clear();
+        _endNodeId = string.Empty;
 
         // Инициализация с настройками Mermaid
         _mermaid.AppendLine("%%{init: {'flowchart': {");
@@ -51,6 +53,8 @@ public sealed class ASTToMermaid
 
         // Начальный и конечный элементы
         string startNode = NewNode("Начало", "terminator");
+        _endNodeId = NewNode("Конец", "terminator");
+
         string lastNode = startNode;
 
         if (root is ProgramNode program)
@@ -58,13 +62,20 @@ public sealed class ASTToMermaid
         else
             lastNode = ProcessNode(root, startNode);
 
-        // Если после последнего оператора ещё висят хвосты (после if/else/циклов), подключаем их к последнему узлу
-        foreach (var pending in _pendingNodes)
-            AddEdge(pending, lastNode);
-        _pendingNodes.Clear();
+        // Если после последнего оператора ещё висят хвосты (после if/else/циклов),
+        // подключаем их к общему узлу "Конец". Если хвостов нет, ведём последний
+        // узел линейного потока в "Конец".
+        if (_pendingNodes.Count > 0)
+        {
+            foreach (var pending in _pendingNodes.Distinct())
+                AddEdge(pending, _endNodeId);
+        }
+        else if (!string.IsNullOrEmpty(lastNode) && lastNode != _endNodeId)
+        {
+            AddEdge(lastNode, _endNodeId);
+        }
 
-        string endNode = NewNode("Конец", "terminator");
-        AddEdge(lastNode, endNode);
+        _pendingNodes.Clear();
 
         return _mermaid.ToString();
     }
@@ -163,27 +174,56 @@ public sealed class ASTToMermaid
         }
 
         // if с then и else
-        if (hasThen && hasElse && thenTarget != null && elseTarget != null)
+        if (hasThen && hasElse)
         {
-            _pendingNodes.Add(thenTarget);
-            _pendingNodes.Add(elseTarget);
-            return thenTarget;
+            bool thenAlive = !string.IsNullOrEmpty(thenTarget);
+            bool elseAlive = !string.IsNullOrEmpty(elseTarget);
+
+            if (thenAlive && thenTarget != null)
+                _pendingNodes.Add(thenTarget);
+            if (elseAlive && elseTarget != null)
+                _pendingNodes.Add(elseTarget);
+
+            if (thenAlive && elseAlive && thenTarget != null)
+                return thenTarget; // обе ветки продолжают выполнение
+
+            if (thenAlive && thenTarget != null)
+                return thenTarget; // только THEN живёт
+
+            if (elseAlive && elseTarget != null)
+                return elseTarget; // только ELSE живёт
+
+            // Обе ветки завершились (оба return/break/continue)
+            return string.Empty;
         }
 
         // if только с THEN-веткой
-        if (hasThen && thenTarget != null)
+        if (hasThen)
         {
-            _pendingNodes.Add(thenTarget); // хвост THEN
-            _pendingNodes.Add(condNode);   // ветка "Нет"
-            return thenTarget;
+            bool thenAlive = !string.IsNullOrEmpty(thenTarget);
+
+            if (thenAlive && thenTarget != null)
+                _pendingNodes.Add(thenTarget); // хвост THEN
+
+            // Ветка "Нет" всегда приводит к последующему оператору
+            _pendingNodes.Add(condNode);
+
+            // Если THEN завершается (return), дальнейший поток идёт только по "Нет"
+            return thenAlive && thenTarget != null ? thenTarget : condNode;
         }
 
         // Теоретический случай: else без then
-        if (hasElse && elseTarget != null)
+        if (hasElse)
         {
-            _pendingNodes.Add(elseTarget);
+            bool elseAlive = !string.IsNullOrEmpty(elseTarget);
+
+            if (elseAlive && elseTarget != null)
+                _pendingNodes.Add(elseTarget);
+
+            // Ветка "Да" (отсутствующий THEN) также даёт хвост через condNode
             _pendingNodes.Add(condNode);
-            return elseTarget;
+
+            return elseAlive && elseTarget != null ? elseTarget : condNode;
         }
 
         // Пустой if
@@ -443,7 +483,12 @@ public sealed class ASTToMermaid
             AddEdge(prevNode, nodeId);
         }
 
-        return nodeId;
+        // return всегда завершает поток и ведёт в общий узел "Конец"
+        if (!string.IsNullOrEmpty(_endNodeId))
+            AddEdge(nodeId, _endNodeId);
+
+        // После return дальнейший линейный поток отсутствует
+        return string.Empty;
     }
 
     /// <summary>
