@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Linq;
+using System.Text;
 
 namespace Lexer;
 
@@ -36,29 +36,29 @@ public enum TokenType
     TypeVector,     // vector (std::vector)
 
     // Модификаторы
-    KeywordConst,       // const
-    KeywordStatic,      // static
-    KeywordVolatile,    // volatile
+    KeywordConst,   // const
+    KeywordStatic,  // static
+    KeywordVolatile,// volatile
 
     // Управление потоком
-    KeywordIf,          // if
-    KeywordElse,        // else
-    KeywordSwitch,      // switch
-    KeywordCase,        // case
-    KeywordDefault,     // default
-    KeywordBreak,       // break
-    KeywordContinue,    // continue
-    KeywordFor,         // for
-    KeywordWhile,       // while
-    KeywordDo,          // do
-    KeywordReturn,      // return
-    KeywordGoto,        // goto
+    KeywordIf,      // if
+    KeywordElse,    // else
+    KeywordSwitch,  // switch
+    KeywordCase,    // case
+    KeywordDefault, // default
+    KeywordBreak,   // break
+    KeywordContinue,// continue
+    KeywordFor,     // for
+    KeywordWhile,   // while
+    KeywordDo,      // do
+    KeywordReturn,  // return
+    KeywordGoto,    // goto
 
     // Логические операторы (текстовые)
-    LogicalAnd,         // and / &&
-    LogicalOr,          // or / ||
-    LogicalNot,         // not / !
-    LogicalXor,         // xor / ^
+    LogicalAnd,     // and / &&
+    LogicalOr,      // or / ||
+    LogicalNot,     // not / !
+    LogicalXor,     // xor / ^
 
     // ООП
     KeywordStruct,      // struct
@@ -101,58 +101,58 @@ public enum TokenType
     StdNamespace,   // std
 
     // Операторы сравнения
-    OpEqual,            // ==
-    OpNotEqual,         // !=
-    OpLessEqual,        // <=
-    OpGreaterEqual,     // >=
-    OpLess,             // <
-    OpGreater,          // >
+    OpEqual,        // ==
+    OpNotEqual,     // !=
+    OpLessEqual,    // <=
+    OpGreaterEqual, // >=
+    OpLess,         // <
+    OpGreater,      // >
 
     // Битовые сдвиги и потоковые операторы
-    OpShiftLeft,        // <<
-    OpShiftRight,       // >>
+    OpShiftLeft,    // <<
+    OpShiftRight,   // >>
 
     // Арифметические операторы
-    OpPlus,             // +
-    OpMinus,            // -
-    OpMultiply,         // *
-    OpDivide,           // /
-    OpModulo,           // %
+    OpPlus,         // +
+    OpMinus,        // -
+    OpMultiply,     // *
+    OpDivide,       // /
+    OpModulo,       // %
 
     // Унарные операторы
-    OpIncrement,        // ++
-    OpDecrement,        // --
+    OpIncrement,    // ++
+    OpDecrement,    // --
 
     // Битовые операторы
-    OpBitAnd,           // & (битовое И)
-    OpBitOr,            // | (битовое ИЛИ)
-    OpBitXor,           // ^ (битовое XOR, если не xor)
-    OpBitNot,           // ~ (битовое отрицание)
+    OpBitAnd,       // & (битовое И)
+    OpBitOr,        // | (битовое ИЛИ)
+    OpBitXor,       // ^ (битовое XOR, если не xor)
+    OpBitNot,       // ~ (битовое отрицание)
 
     // Присваивание
-    OpAssign,           // =
+    OpAssign,       // =
 
     // Прочие операторы
-    OpTernary,          // ?
+    OpTernary,      // ?
 
     // Разделители
-    LParen,     // (
-    RParen,     // )
-    LBrace,     // {
-    RBrace,     // }
-    LBracket,   // [
-    RBracket,   // ]
-    Semicolon,  // ;
-    Comma,      // ,
-    Dot,        // .
-    Colon,      // :
-    Arrow,      // ->
-    DoubleColon,// ::
+    LParen,         // (
+    RParen,         // )
+    LBrace,         // {
+    RBrace,         // }
+    LBracket,       // [
+    RBracket,       // ]
+    Semicolon,      // ;
+    Comma,          // ,
+    Dot,            // .
+    Colon,          // :
+    Arrow,          // ->
+    DoubleColon,    // ::
 
     // Служебные типы
     Preprocessor,   // Директивы препроцессора
     Comment,        // Комментарии
-    Whitespace,     // Пробелы
+    Whitespace,     // Пробелы (в текущей реализации не выдаётся как токен)
     EndOfFile,      // Конец файла
     Unknown         // Неизвестный токен
 }
@@ -202,11 +202,9 @@ public sealed class LexAnalyzer
 {
     private readonly string _input;
     private readonly LanguageGrammar _grammar;
-
     private int _pos = 0;
     private int _line = 1;
     private int _column = 1;
-
     private const char EOF_CHAR = '\0';
 
     public List<(int Line, int Col, string Message)> Errors { get; } = new();
@@ -224,7 +222,6 @@ public sealed class LexAnalyzer
         while (_pos < _input.Length)
         {
             var token = ScanToken();
-
             if (token.Type != TokenType.Unknown &&
                 token.Type != TokenType.Whitespace &&
                 token.Type != TokenType.Comment)
@@ -303,7 +300,6 @@ public sealed class LexAnalyzer
     }
 
     private char Current => _pos < _input.Length ? _input[_pos] : EOF_CHAR;
-
     private char PeekNext() => _pos + 1 < _input.Length ? _input[_pos + 1] : EOF_CHAR;
 
     private void Advance()
@@ -332,19 +328,30 @@ public sealed class LexAnalyzer
 
     private void SkipBlockComment()
     {
+        int startLine = _line;
+        int startCol = _column;
+
         Advance(); // '/'
         Advance(); // '*'
+
+        bool closed = false;
 
         while (_pos < _input.Length)
         {
             if (Current == '*' && PeekNext() == '/')
             {
-                Advance();
-                Advance();
+                Advance(); // '*'
+                Advance(); // '/'
+                closed = true;
                 break;
             }
 
             Advance();
+        }
+
+        if (!closed)
+        {
+            Errors.Add((startLine, startCol, "Незакрытый блочный комментарий"));
         }
     }
 
@@ -352,7 +359,6 @@ public sealed class LexAnalyzer
     {
         int startLine = _line;
         int startCol = _column;
-
         var sb = new StringBuilder();
 
         while (_pos < _input.Length && _input[_pos] != '\n')
@@ -370,56 +376,94 @@ public sealed class LexAnalyzer
         int startCol = _column;
         var sb = new StringBuilder();
 
-        // Hex
+        // Hex 0x...
         if (Current == '0' && (PeekNext() == 'x' || PeekNext() == 'X'))
         {
-            sb.Append(Current); Advance();
-            sb.Append(Current); Advance();
+            sb.Append(Current);
+            Advance();
+            sb.Append(Current);
+            Advance();
 
+            int hexStartPos = _pos;
             while (_pos < _input.Length && IsHexDigit(Current))
             {
                 sb.Append(Current);
                 Advance();
             }
 
+            if (_pos == hexStartPos)
+            {
+                // Нет ни одной шестнадцатеричной цифры после 0x
+                Errors.Add((_line, _column, "Ожидалась шестнадцатеричная цифра после префикса 0x"));
+            }
+
             return new Token(TokenType.Number, sb.ToString(), startLine, startCol);
         }
 
-        // Binary
+        // Binary 0b...
         if (Current == '0' && (PeekNext() == 'b' || PeekNext() == 'B'))
         {
-            sb.Append(Current); Advance();
-            sb.Append(Current); Advance();
+            sb.Append(Current);
+            Advance();
+            sb.Append(Current);
+            Advance();
 
+            int binStartPos = _pos;
             while (_pos < _input.Length && (Current == '0' || Current == '1'))
             {
                 sb.Append(Current);
                 Advance();
             }
 
+            if (_pos == binStartPos)
+            {
+                // Нет ни одной двоичной цифры после 0b
+                Errors.Add((_line, _column, "Ожидалась двоичная цифра после префикса 0b"));
+            }
+
             return new Token(TokenType.Number, sb.ToString(), startLine, startCol);
         }
 
-        // Decimal
+        // Decimal / floating
+        bool hasDot = false;
+
+        // Целая часть
         while (_pos < _input.Length && char.IsDigit(Current))
         {
             sb.Append(Current);
             Advance();
         }
 
-        // Fractional part
-        if (Current == '.' && char.IsDigit(PeekNext()))
+        // Возможная дробная часть
+        while (_pos < _input.Length && (Current == '.' || char.IsDigit(Current)))
         {
-            sb.Append(Current); Advance();
-
-            while (_pos < _input.Length && char.IsDigit(Current))
+            if (Current == '.')
             {
+                if (hasDot)
+                {
+                    // Вторая точка в числе с плавающей точкой: 13.3.3
+                    Errors.Add((_line, _column, "Слишком много точек в числе с плавающей точкой"));
+                    // Не поглощаем вторую точку, чтобы она пошла как отдельный токен '.'
+                    break;
+                }
+
+                // Если после точки нет цифры, считаем, что это просто целое число и точка отдельно
+                if (!char.IsDigit(PeekNext()))
+                    break;
+
+                hasDot = true;
+                sb.Append(Current);
+                Advance();
+            }
+            else
+            {
+                // Цифры после точки или продолжение целой части
                 sb.Append(Current);
                 Advance();
             }
         }
 
-        // Suffixes
+        // Сюда можно дописать более строгие проверки суффиксов, если нужно
         while (_pos < _input.Length && (char.IsLetter(Current) || Current == '_'))
         {
             sb.Append(Current);
@@ -438,7 +482,7 @@ public sealed class LexAnalyzer
         int startCol = _column;
         var sb = new StringBuilder();
 
-        sb.Append(Current);
+        sb.Append(Current); // Открывающая кавычка
         Advance();
 
         while (_pos < _input.Length && Current != _grammar.StringDelimiter)
@@ -480,7 +524,7 @@ public sealed class LexAnalyzer
         int startCol = _column;
         var sb = new StringBuilder();
 
-        sb.Append(Current);
+        sb.Append(Current); // Открывающая кавычка
         Advance();
 
         if (Current == _grammar.EscapeChar)
@@ -542,8 +586,7 @@ public sealed class LexAnalyzer
         // Двухсимвольные операторы
         if (_pos + 1 < _input.Length)
         {
-            string twoChar = new string(new[] { ch, PeekNext() });
-
+            string twoChar = new(new[] { ch, PeekNext() });
             if (_grammar.TwoCharOperators.TryGetValue(twoChar, out var type))
             {
                 Advance();
@@ -554,7 +597,6 @@ public sealed class LexAnalyzer
 
         // Односимвольные операторы и разделители
         Advance();
-
         if (_grammar.SingleCharTokens.TryGetValue(ch, out var singleType))
             return new Token(singleType, ch.ToString(), startLine, startCol);
 
