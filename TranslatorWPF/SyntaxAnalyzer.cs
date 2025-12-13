@@ -128,9 +128,104 @@ public sealed class SyntaxAnalyzer
     }
 
     // ================= Точка входа =================
+    // ================= Проверка баланса скобок =================
+    private void ValidateBracketBalance()
+    {
+        // Открывающая -> закрывающая
+        var openToClose = new Dictionary<TokenType, TokenType>
+        {
+            [TokenType.LBrace] = TokenType.RBrace,     // { }
+            [TokenType.LParen] = TokenType.RParen,     // ( )
+            [TokenType.LBracket] = TokenType.RBracket  // [ ]
+        };
+
+        // Закрывающая -> открывающая
+        var closeToOpen = new Dictionary<TokenType, TokenType>
+        {
+            [TokenType.RBrace] = TokenType.LBrace,
+            [TokenType.RParen] = TokenType.LParen,
+            [TokenType.RBracket] = TokenType.LBracket
+        };
+
+        // Храним тип и токен открытия, чтобы точно указать позицию
+        var stack = new Stack<(TokenType OpenType, Token OpenTok)>();
+
+        foreach (var tok in _tokenList)
+        {
+            // Открывающие
+            if (openToClose.ContainsKey(tok.Type))
+            {
+                stack.Push((tok.Type, tok));
+                continue;
+            }
+
+            // Закрывающие
+            if (!closeToOpen.ContainsKey(tok.Type))
+                continue;
+
+            var expectedOpen = closeToOpen[tok.Type];
+
+            // Закрывающая без открытия => "не хватает открывающей"
+            if (stack.Count == 0)
+            {
+                var missingOpenLexeme = expectedOpen switch
+                {
+                    TokenType.LBrace => "{",
+                    TokenType.LParen => "(",
+                    TokenType.LBracket => "[",
+                    _ => "?"
+                };
+
+                Errors.Add((tok.Line, tok.Column,
+                    $"Не хватает открывающей '{missingOpenLexeme}' (обнаружена закрывающая '{tok.Lexeme}')."));
+                continue;
+            }
+
+            var top = stack.Pop();
+
+            // Несоответствие типа (например, { ... ) )
+            if (top.OpenType != expectedOpen)
+            {
+                // Ожидали закрыть то, что сверху стека
+                var expectedCloseType = openToClose[top.OpenType];
+                var expectedCloseLexeme = expectedCloseType switch
+                {
+                    TokenType.RBrace => "}",
+                    TokenType.RParen => ")",
+                    TokenType.RBracket => "]",
+                    _ => "?"
+                };
+
+                Errors.Add((tok.Line, tok.Column,
+                    $"Несоответствие скобок: ожидалась '{expectedCloseLexeme}', но обнаружена '{tok.Lexeme}'."));
+            }
+        }
+
+        // Остались незакрытые открывающие => "не хватает закрывающей"
+        while (stack.Count > 0)
+        {
+            var (openType, openTok) = stack.Pop();
+            var closeType = openToClose[openType];
+
+            var missingCloseLexeme = closeType switch
+            {
+                TokenType.RBrace => "}",
+                TokenType.RParen => ")",
+                TokenType.RBracket => "]",
+                _ => "?"
+            };
+
+            Errors.Add((openTok.Line, openTok.Column,
+                $"Не хватает закрывающей '{missingCloseLexeme}' для '{openTok.Lexeme}'."));
+        }
+    }
+
+
 
     public ProgramNode? ParseProgram()
     {
+        ValidateBracketBalance();
+
         try
         {
             return ParseCppProgram();
